@@ -13,7 +13,7 @@ PUBLISH_TIME_TYPE = 0
 
 # 指定DY视频ID列表
 DY_SPECIFIED_ID_LIST = [
-    "7547277273242553609",
+    "7548310409170783498",
     # ........................
 ]
 
@@ -23,4 +23,7 @@ DY_CREATOR_ID_LIST = [
     # ........................
 ]
 #uv run main.py --platform dy --lt qrcode --type detail
-#7547277273242553609
+#uv run python start_douyin_complete.py
+#uv run python start_web_auto_port.py
+#uv run python start_image_web.py  # 启动支持评论图片显示的Web界面
+#7548310409170783498

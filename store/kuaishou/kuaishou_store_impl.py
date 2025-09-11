@@ -47,7 +47,7 @@ class KuaishouCsvStoreImplement(AbstractStore):
     async def store_creator(self, creator: Dict):
         pass
 
-    csv_store_path: str = "data/kuaishou"
+    csv_store_path: str = "D:/桌面"
     file_count:int=calculate_number_of_files(csv_store_path)
 
     def make_save_file_name(self, store_type: str) -> str:

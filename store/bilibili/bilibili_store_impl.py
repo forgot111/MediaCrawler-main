@@ -43,7 +43,7 @@ def calculate_number_of_files(file_store_path: str) -> int:
         return 1
 
 class BiliCsvStoreImplement(AbstractStore):
-    csv_store_path: str = "data/bilibili"
+    csv_store_path: str = "D:/桌面"
     file_count:int=calculate_number_of_files(csv_store_path)
     def make_save_file_name(self, store_type: str) -> str:
         """

@@ -81,6 +81,34 @@
 
 > 💡 **开源不易，如果这个项目对您有帮助，请给个 ⭐ Star 支持一下！**
 
+## ⚠️ 常见问题解决
+
+### 📋 ModuleNotFoundError: No module named 'aiomysql'
+
+如果你遇到 `ModuleNotFoundError: No module named 'aiomysql'` 错误，这是因为没有使用正确的 Python 环境。
+
+**解决方案**：
+1. **推荐方法**：始终使用 `uv run` 前缀运行 Python 脚本
+   ```bash
+   # ✅ 正确方式
+   uv run python start_web_auto_port.py
+   uv run main.py --platform dy --lt qrcode --type detail
+   
+   # ❌ 错误方式
+   python start_web_auto_port.py
+   ```
+
+2. **便捷启动**：使用项目提供的启动脚本
+   - Windows：双击 `启动助手.bat`
+   - PowerShell：运行 `start_web.ps1`
+   - 批处理：运行 `start_web.bat`
+
+3. **重新安装依赖**（如果问题仍然存在）：
+   ```bash
+   uv sync
+   uv run playwright install
+   ```
+
 ## 📋 前置依赖
 
 ### 🚀 uv 安装（推荐）
