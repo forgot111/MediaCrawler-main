@@ -22,8 +22,6 @@ DY_CREATOR_ID_LIST = [
     "MS4wLjABAAAA0AiK9Q4FlkTxKHo-b6Vi1ckA2Ybq-WNgJ-b5xXlULtI",
     # ........................
 ]
-#uv run main.py --platform dy --lt qrcode --type detail
 #uv run python start_douyin_complete.py
 #uv run python start_web_auto_port.py
-#uv run python start_image_web.py  # 启动支持评论图片显示的Web界面
 #7548310409170783498
