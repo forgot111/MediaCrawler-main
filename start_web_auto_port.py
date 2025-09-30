@@ -48,7 +48,7 @@ async def start_web_with_auto_port():
         
         # 检查CSV文件
         csv_path = None
-        desktop_path = "D:/桌面"
+        desktop_path = "F:/下载"
         
         print(f"🔍 检查目录: {desktop_path}")
         if os.path.exists(desktop_path):

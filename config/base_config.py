@@ -115,10 +115,4 @@ COMMENT_CRAWL_INTERVAL = 0.5
 BATCH_COMMENT_SIZE = 50
 
 
-from .bilibili_config import *
-from .xhs_config import *
 from .dy_config import *
-from .ks_config import *
-from .weibo_config import *
-from .tieba_config import *
-from .zhihu_config import *

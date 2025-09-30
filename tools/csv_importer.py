@@ -228,7 +228,7 @@ class CSVImporter:
             import glob
             
             # 在D盘桌面查找CSV文件
-            desktop_path = "D:/桌面"
+            desktop_path = "F:/下载"
             if not os.path.exists(desktop_path):
                 return ""
                 

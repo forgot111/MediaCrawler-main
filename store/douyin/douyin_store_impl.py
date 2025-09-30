@@ -44,7 +44,7 @@ def calculate_number_of_files(file_store_path: str) -> int:
 
 
 class DouyinCsvStoreImplement(AbstractStore):
-    csv_store_path: str = "D:/桌面"
+    csv_store_path: str = "F:/下载"
     _file_count: int = None
     _lock = asyncio.Lock()
 
