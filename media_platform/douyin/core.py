@@ -167,11 +167,6 @@ class DouYinCrawler(AbstractCrawler):
                 await douyin_store.update_douyin_aweme(aweme_item=aweme_detail)
                 await self.get_aweme_media(aweme_item=aweme_detail)
         await self.batch_get_note_comments(config.DY_SPECIFIED_ID_LIST)
-        
-        # 抓取完所有评论后，开始持续监控新评论
-        if config.ENABLE_GET_COMMENTS:
-            utils.logger.info("[DouYinCrawler] 开始持续监控新评论...")
-            await self.monitor_new_comments()
 
     async def get_aweme_detail(self, aweme_id: str, semaphore: asyncio.Semaphore) -> Any:
         """Get note detail"""
@@ -226,106 +221,6 @@ class DouYinCrawler(AbstractCrawler):
             except DataFetchError as e:
                 utils.logger.error(f"[DouYinCrawler.get_comments] aweme_id: {aweme_id} get comments failed, error: {e}")
 
-    async def monitor_new_comments(self):
-        """持续监控新评论"""
-        utils.logger.info("[DouYinCrawler.monitor_new_comments] 开始持续监控新评论，按 Ctrl+C 停止监控")
-        
-        # 记录已处理的评论ID，避免重复抓取
-        processed_comments = set()
-        
-        try:
-            while True:
-                utils.logger.info(f"[DouYinCrawler.monitor_new_comments] 开始检测新评论，目标视频: {config.DY_SPECIFIED_ID_LIST}")
-                
-                # 获取评论
-                for aweme_id in config.DY_SPECIFIED_ID_LIST:
-                    try:
-                        utils.logger.info(f"[DouYinCrawler.monitor_new_comments] 检测视频 {aweme_id} 的新评论...")
-                        
-                        # 获取评论数据
-                        comments = await self.get_comments_data(aweme_id)
-                        
-                        # 统计新评论数量并存储新评论
-                        new_comments_count = 0
-                        if comments and isinstance(comments, list):
-                            utils.logger.info(f"[DouYinCrawler.monitor_new_comments] 视频 {aweme_id} 本次获取到 {len(comments)} 条评论")
-                            
-                            for comment in comments:
-                                if isinstance(comment, dict):
-                                    comment_id = comment.get('comment_id', '')
-                                    if comment_id and comment_id not in processed_comments:
-                                        processed_comments.add(comment_id)
-                                        new_comments_count += 1
-                                        # 存储新评论
-                                        try:
-                                            await douyin_store.update_dy_aweme_comment(comment_item=comment)
-                                            utils.logger.info(f"[DouYinCrawler.monitor_new_comments] 存储新评论: {comment_id}")
-                                        except Exception as store_error:
-                                            utils.logger.error(f"[DouYinCrawler.monitor_new_comments] 存储评论失败: {store_error}")
-                                    else:
-                                        utils.logger.debug(f"[DouYinCrawler.monitor_new_comments] 评论 {comment_id} 已处理过，跳过")
-                        else:
-                            utils.logger.warning(f"[DouYinCrawler.monitor_new_comments] 视频 {aweme_id} 获取评论失败或返回空列表")
-                        
-                        if new_comments_count > 0:
-                            utils.logger.info(f"[DouYinCrawler.monitor_new_comments] 视频 {aweme_id} 发现 {new_comments_count} 条新评论")
-                        else:
-                            utils.logger.info(f"[DouYinCrawler.monitor_new_comments] 视频 {aweme_id} 暂无新评论")
-                        
-                    except Exception as e:
-                        utils.logger.error(f"[DouYinCrawler.monitor_new_comments] 检测视频 {aweme_id} 新评论失败: {e}")
-                        continue
-                
-                # 等待60秒后进行下一轮检测
-                utils.logger.info("[DouYinCrawler.monitor_new_comments] 等待60秒后进行下一轮检测...")
-                await asyncio.sleep(60)
-                
-        except KeyboardInterrupt:
-            utils.logger.info("[DouYinCrawler.monitor_new_comments] 收到停止信号，正在退出持续监控...")
-        except Exception as e:
-            utils.logger.error(f"[DouYinCrawler.monitor_new_comments] 持续监控出错: {e}")
-
-    async def get_comments_data(self, aweme_id: str) -> List[Dict]:
-        """获取评论数据并返回评论列表（用于监控新评论）"""
-        try:
-            # 收集评论的临时列表
-            comments_list = []
-            
-            def collect_comments(comment_item: Dict, aweme_id: str = ""):
-                comments_list.append(comment_item)
-            
-            # 使用更短的评论抓取间隔
-            comment_crawl_interval = getattr(config, 'COMMENT_CRAWL_INTERVAL', 0.5)
-            
-            # 调用获取评论的方法
-            result = await self.dy_client.get_aweme_all_comments(
-                aweme_id=aweme_id,
-                crawl_interval=comment_crawl_interval,
-                is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
-                callback=collect_comments,
-                max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
-            )
-            
-            # 检查返回值
-            if result is None:
-                utils.logger.warning(f"[DouYinCrawler.get_comments_data] aweme_id: {aweme_id} 返回None，使用callback收集的评论")
-                result = comments_list
-            elif isinstance(result, list):
-                # 如果返回的是列表，合并callback收集的评论
-                result.extend(comments_list)
-            else:
-                utils.logger.warning(f"[DouYinCrawler.get_comments_data] aweme_id: {aweme_id} 返回类型异常: {type(result)}，使用callback收集的评论")
-                result = comments_list
-            
-            utils.logger.info(f"[DouYinCrawler.get_comments_data] aweme_id: {aweme_id} 获取到 {len(result)} 条评论")
-            return result if isinstance(result, list) else []
-            
-        except DataFetchError as e:
-            utils.logger.error(f"[DouYinCrawler.get_comments_data] aweme_id: {aweme_id} get comments failed, error: {e}")
-            return []
-        except Exception as e:
-            utils.logger.error(f"[DouYinCrawler.get_comments_data] aweme_id: {aweme_id} unexpected error: {e}")
-            return []
 
     async def get_creators_and_videos(self) -> None:
         """
