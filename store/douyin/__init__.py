@@ -18,9 +18,6 @@ import config
 from var import source_keyword_var
 
 from .douyin_store_impl import *
-from .douyin_store_media import *
-from .douyin_visual_store import DouyinVisualStoreImplement
-from .douyin_excel_store import DouyinExcelStoreImplement
 from .douyin_web_store import DouyinWebStoreImplement
 
 # 用于缓存评论信息，key为comment_id，value为评论信息
@@ -32,11 +29,7 @@ processed_comments: set = set()
 class DouyinStoreFactory:
     STORES = {
         "csv": DouyinCsvStoreImplement,
-        "db": DouyinDbStoreImplement,
         "json": DouyinJsonStoreImplement,
-        "sqlite": DouyinSqliteStoreImplement,
-        "visual": DouyinVisualStoreImplement,  # 可视化报告（图表+HTML）
-        "excel": DouyinExcelStoreImplement,    # Excel格式化报告
         "web": DouyinWebStoreImplement,        # 实时Web界面
     }
     
@@ -51,7 +44,7 @@ class DouyinStoreFactory:
                 if cls._instance is None:
                     store_class = cls.STORES.get(config.SAVE_DATA_OPTION)
                     if not store_class:
-                        raise ValueError("[DouyinStoreFactory.create_store] Invalid save option only supported csv or db or json or sqlite or visual or excel or web ...")
+                        raise ValueError("[DouyinStoreFactory.create_store] Invalid save option only supported csv or json or web ...")
                     cls._instance = store_class()
         return cls._instance
 
