@@ -18,6 +18,7 @@ import csv
 import json
 import os
 import pathlib
+from datetime import datetime
 from typing import Dict
 
 import aiofiles
@@ -25,6 +26,7 @@ import aiofiles
 import config
 from base.base_crawler import AbstractStore
 from tools import utils
+from tools.douyin_csv import CSV_OUTPUT_DIR
 from var import crawler_type_var
 
 
@@ -44,18 +46,12 @@ def calculate_number_of_files(file_store_path: str) -> int:
 
 
 class DouyinCsvStoreImplement(AbstractStore):
-    csv_store_path: str = "F:/下载"
-    _file_count: int = None
-    _lock = asyncio.Lock()
+    csv_store_path: str = str(CSV_OUTPUT_DIR)
 
-    @classmethod
-    async def get_file_count(cls) -> int:
-        """线程安全地获取文件计数"""
-        if cls._file_count is None:
-            async with cls._lock:
-                if cls._file_count is None:
-                    cls._file_count = calculate_number_of_files(cls.csv_store_path)
-        return cls._file_count
+    def __init__(self):
+        self._run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._file_prefix = "_".join(config.DY_SPECIFIED_ID_LIST[:3]) or "douyin"
+        self._lock = asyncio.Lock()
 
     def make_save_file_name(self, store_type: str) -> str:
         """
@@ -63,14 +59,11 @@ class DouyinCsvStoreImplement(AbstractStore):
         Args:
             store_type: contents or comments
 
-        Returns: eg: data/douyin/search_comments_20240114.csv ...
+        Returns: data/douyin/csv/视频ID_抓取时间_comments.csv
 
         """
-        # 使用固定的文件计数，确保所有并发任务写入同一个文件
-        file_count = self._file_count or calculate_number_of_files(self.csv_store_path)
-        # 使用DY视频ID列表生成文件名
-        dy_video_ids = "_".join(config.DY_SPECIFIED_ID_LIST[:3])  # 取前3个ID，避免文件名过长
-        return f"{self.csv_store_path}/{dy_video_ids}_{store_type}.csv"
+        # 同一轮的所有并发任务共用一个文件，不与其他轮次追加到一起。
+        return str(pathlib.Path(self.csv_store_path) / f"{self._file_prefix}_{self._run_id}_{store_type}.csv")
 
     async def save_data_to_csv(self, save_item: Dict, store_type: str):
         """
@@ -83,10 +76,6 @@ class DouyinCsvStoreImplement(AbstractStore):
 
         """
         pathlib.Path(self.csv_store_path).mkdir(parents=True, exist_ok=True)
-        
-        # 确保文件计数只计算一次
-        if self._file_count is None:
-            self._file_count = calculate_number_of_files(self.csv_store_path)
         
         save_file_name = self.make_save_file_name(store_type=store_type)
         

@@ -17,6 +17,7 @@
 """
 
 import asyncio
+import errno
 import json
 import os
 import re
@@ -31,6 +32,7 @@ from collections import Counter
 import jieba
 import wordcloud
 from io import BytesIO
+from pathlib import Path
 import base64
 
 from base.base_crawler import AbstractStore
@@ -40,8 +42,12 @@ from tools import utils
 class DouyinWebStoreImplement(AbstractStore):
     """抖音Web实时可视化存储实现类"""
     
-    def __init__(self):
-        self.web_path = "data/douyin/web"
+    def __init__(self, port=8082, web_path=None, open_browser=True):
+        project_root = Path(__file__).resolve().parents[2]
+        self.web_path = str(Path(web_path or project_root / "data" / "douyin" / "web").resolve())
+        self.port = port
+        self._open_browser = open_browser
+        self._server = None
         self.data_cache = {
             'contents': [],
             'comments': [],
@@ -270,7 +276,7 @@ class DouyinWebStoreImplement(AbstractStore):
             # 生成词云
             if word_freq:
                 wc = wordcloud.WordCloud(
-                    font_path='C:/Windows/Fonts/simhei.ttf',  # Windows中文字体
+                    font_path=str(Path(__file__).resolve().parents[2] / 'docs' / 'STZHONGS.TTF'),
                     width=400,
                     height=300,
                     background_color='white',
@@ -321,43 +327,36 @@ class DouyinWebStoreImplement(AbstractStore):
 
     async def _start_web_server(self):
         """启动Web服务器"""
-        try:
-            # 创建Web目录和文件
-            os.makedirs(self.web_path, exist_ok=True)
-            await self._create_web_files()
-            
-            # 在后台线程启动HTTP服务器
-            def start_server():
-                try:
-                    os.chdir(self.web_path)
-                    handler = self._create_request_handler()
-                    # 尝试使用8082端口，如果被占用则使用8083
-                    port = 8082
-                    try:
-                        with socketserver.TCPServer(("", port), handler) as httpd:
-                            utils.logger.info(f"[DouyinWebStore] Web服务器已启动: http://localhost:{port}")
-                            # 自动打开浏览器
-                            threading.Timer(2, lambda: webbrowser.open(f'http://localhost:{port}')).start()
-                            httpd.serve_forever()
-                    except OSError as e:
-                        if "Address already in use" in str(e):
-                            port = 8083
-                            utils.logger.info(f"[DouyinWebStore] 端口8082被占用，尝试使用端口{port}")
-                            with socketserver.TCPServer(("", port), handler) as httpd:
-                                utils.logger.info(f"[DouyinWebStore] Web服务器已启动: http://localhost:{port}")
-                                # 自动打开浏览器
-                                threading.Timer(2, lambda: webbrowser.open(f'http://localhost:{port}')).start()
-                                httpd.serve_forever()
-                        else:
-                            raise e
-                except Exception as e:
-                    utils.logger.error(f"[DouyinWebStore] Web服务器启动失败: {e}")
-            
-            server_thread = threading.Thread(target=start_server, daemon=True)
-            server_thread.start()
-            
-        except Exception as e:
-            utils.logger.error(f"[DouyinWebStore] 启动Web服务器失败: {e}")
+        os.makedirs(self.web_path, exist_ok=True)
+        await self._create_web_files()
+        await self._update_web_data()
+
+        handler = self._create_request_handler()
+        for port in range(self.port, self.port + 50):
+            try:
+                self._server = socketserver.TCPServer(("", port), handler)
+                break
+            except OSError as error:
+                if error.errno != errno.EADDRINUSE:
+                    raise
+        else:
+            raise RuntimeError("无法找到可用端口，请先停止旧的 report 服务")
+
+        self.port = self._server.server_address[1]
+        server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        server_thread.start()
+        self._server_started = True
+        utils.logger.info(f"[DouyinWebStore] Web服务器已启动: http://localhost:{self.port}")
+        if self._open_browser:
+            webbrowser.open(f"http://localhost:{self.port}")
+
+    def close(self):
+        """停止本次 report 的服务器并释放端口。"""
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+            self._server_started = False
 
     def _create_request_handler(self):
         """创建自定义HTTP请求处理器"""
@@ -383,6 +382,7 @@ class DouyinWebStoreImplement(AbstractStore):
                 """提供数据API"""
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Cache-Control', 'no-store')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 
@@ -555,19 +555,23 @@ class DouyinWebStoreImplement(AbstractStore):
             
             def _serve_static(self):
                 """提供静态文件"""
-                if self.path == '/':
-                    self.path = '/index.html'
-                
+                relative_path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path).lstrip('/') or 'index.html'
+                file_path = (Path(web_store.web_path) / relative_path).resolve()
+                if not file_path.is_relative_to(Path(web_store.web_path)):
+                    self._send_error_response(403, "无法访问该文件")
+                    return
+
                 try:
-                    with open(self.path[1:], 'rb') as f:
+                    with file_path.open('rb') as f:
                         content = f.read()
                     
                     self.send_response(200)
-                    if self.path.endswith('.html'):
+                    self.send_header('Cache-Control', 'no-store')
+                    if file_path.suffix == '.html':
                         self.send_header('Content-Type', 'text/html; charset=utf-8')
-                    elif self.path.endswith('.js'):
+                    elif file_path.suffix == '.js':
                         self.send_header('Content-Type', 'application/javascript')
-                    elif self.path.endswith('.css'):
+                    elif file_path.suffix == '.css':
                         self.send_header('Content-Type', 'text/css')
                     else:
                         self.send_header('Content-Type', 'application/octet-stream')

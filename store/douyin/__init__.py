@@ -389,6 +389,7 @@ async def reset_store_factory():
     重置存储工厂，在开始新的抓取任务时调用
     """
     DouyinStoreFactory._instance = None
+    await clear_comment_cache()
     utils.logger.info(f"[store.douyin.reset_store_factory] 已重置存储工厂")
 
 
