@@ -15,7 +15,7 @@ import urllib.parse
 from typing import Any, Callable, Dict, Union, Optional
 
 import httpx
-from playwright.async_api import BrowserContext
+from playwright.async_api import BrowserContext, Error as PlaywrightError
 
 from base.base_crawler import AbstractApiClient
 from tools import utils
@@ -43,6 +43,7 @@ class DouYinClient(AbstractApiClient):
         self._host = "https://www.douyin.com"
         self.playwright_page = playwright_page
         self.cookie_dict = cookie_dict
+        self.comment_crawl_summaries: Dict[str, Dict] = {}
 
     async def __process_req_params(
         self,
@@ -191,11 +192,9 @@ class DouYinClient(AbstractApiClient):
         """
         uri = "/aweme/v1/web/comment/list/"
         params = {"aweme_id": aweme_id, "cursor": cursor, "count": 50, "item_type": 0}
-        keywords = request_keyword_var.get()
-        referer_url = "https://www.douyin.com/search/" + keywords + '?aid=3a3cec5a-9e27-4040-b6aa-ef548c2c1138&publish_time=0&sort_type=0&source=search_history&type=general'
         headers = copy.copy(self.headers)
-        headers["Referer"] = urllib.parse.quote(referer_url, safe=':/')
-        return await self.get(uri, params)
+        headers["Referer"] = f"https://www.douyin.com/video/{aweme_id}"
+        return await self.get(uri, params, headers=headers)
 
     async def get_sub_comments(self, aweme_id: str, comment_id: str, cursor: int = 0):
         """
@@ -209,11 +208,48 @@ class DouYinClient(AbstractApiClient):
             "item_type": 0,
             "item_id": aweme_id,
         }
-        keywords = request_keyword_var.get()
-        referer_url = "https://www.douyin.com/search/" + keywords + '?aid=3a3cec5a-9e27-4040-b6aa-ef548c2c1138&publish_time=0&sort_type=0&source=search_history&type=general'
         headers = copy.copy(self.headers)
-        headers["Referer"] = urllib.parse.quote(referer_url, safe=':/')
-        return await self.get(uri, params)
+        headers["Referer"] = f"https://www.douyin.com/video/{aweme_id}"
+        return await self.get(uri, params, headers=headers)
+
+    async def _request_comment_page(self, fetch, cursor, label, retries, interval, summary):
+        """对同一页作有限重试，异常响应不能被当成评论已读完。"""
+        for attempt in range(retries + 1):
+            summary["requests"] += 1
+            try:
+                page = await fetch(cursor)
+                if not isinstance(page, dict) or page.get("status_code", 0) not in (0, "0"):
+                    raise DataFetchError("评论接口返回非成功状态")
+                if "comments" not in page or "has_more" not in page:
+                    raise DataFetchError("评论接口缺少 comments 或 has_more 字段")
+                if page["comments"] is not None and not isinstance(page["comments"], list):
+                    raise DataFetchError("评论列表格式无效")
+                more = page["has_more"] in (True, 1, "1", "true")
+                if more and ("cursor" not in page or not str(page["cursor"]).isdigit()):
+                    raise DataFetchError("评论接口缺少有效的下一页游标")
+                # 空页但仍有下一页时，先重试原页，再按返回的游标继续。
+                if not page["comments"] and more and attempt < retries:
+                    raise DataFetchError("接口暂时返回空页，但 has_more=1")
+                return page
+            except (httpx.RequestError, httpx.HTTPStatusError, PlaywrightError) as error:
+                if isinstance(error, PlaywrightError) and not any(
+                    text in str(error) for text in ("Execution context was destroyed", "Cannot find context")
+                ):
+                    summary["stop_reason"] = "browser_unavailable"
+                    summary["warnings"].append({"stage": label, "cursor": cursor, "reason": "browser_unavailable"})
+                    return None
+                if isinstance(error, IPBlockError) or "account blocked" in str(error):
+                    summary["stop_reason"] = "access_blocked"
+                    summary["warnings"].append({"stage": label, "cursor": cursor, "reason": "access_blocked"})
+                    return None
+                if attempt == retries:
+                    summary["failed_pages"] += 1
+                    summary["warnings"].append({"stage": label, "cursor": cursor, "reason": "request_failed"})
+                    utils.logger.warning(f"[DouYinClient] {label} cursor={cursor} 重试后仍失败：{type(error).__name__}")
+                    return None
+                summary["retries"] += 1
+                utils.logger.warning(f"[DouYinClient] {label} cursor={cursor} 暂未成功，稍后重试 {attempt + 1}/{retries}")
+                await asyncio.sleep(max(1.0, interval) * (2 ** attempt))
 
     async def get_aweme_all_comments(
         self,
@@ -222,87 +258,174 @@ class DouYinClient(AbstractApiClient):
         is_fetch_sub_comments=False,
         callback: Optional[Callable] = None,
         max_count: int = 10,
+        max_passes: int = 2,
+        max_retries: int = 3,
     ):
-        """
-        获取帖子的所有评论，包括子评论
-        :param aweme_id: 帖子ID
-        :param crawl_interval: 抓取间隔
-        :param is_fetch_sub_comments: 是否抓取子评论
-        :param callback: 回调函数，用于处理抓取到的评论
-        :param max_count: 一次帖子爬取的最大评论数量
-        :return: 评论列表
-        """
-        result = []
-        comments_has_more = 1
-        comments_cursor = 0
-        top_level_comments = []  # 存储顶级评论
-        total_processed = 0  # 总处理数量计数器
-        
-        # 先抓取顶级评论
-        while comments_has_more and len(top_level_comments) < max_count:
-            comments_res = await self.get_aweme_comments(aweme_id, comments_cursor)
-            comments_has_more = comments_res.get("has_more", 0)
-            comments_cursor = comments_res.get("cursor", 0)
-            comments = comments_res.get("comments", [])
-            if not comments:
-                continue
-            if len(top_level_comments) + len(comments) > max_count:
-                comments = comments[:max_count - len(top_level_comments)]
-            top_level_comments.extend(comments)
-            result.extend(comments)
-            total_processed += len(comments)
-            if callback:  # 如果有回调函数，就执行回调函数
-                await callback(aweme_id, comments)
+        """分页抓取并在本轮任务内补抓，max_count 按唯一评论（含回复）计数。"""
+        aweme_id = str(aweme_id)
+        max_count = max(0, int(max_count))
+        max_passes = max(1, int(max_passes))
+        max_retries = max(0, int(max_retries))
+        crawl_interval = max(0.0, float(crawl_interval))
+        result, seen, roots, thread_ids = [], set(), {}, {}
+        summary = {
+            "video_id": aweme_id,
+            "max_count": max_count,
+            "requested_passes": max_passes,
+            "requests": 0,
+            "retries": 0,
+            "failed_pages": 0,
+            "duplicates_skipped": 0,
+            "invalid_comments_skipped": 0,
+            "api_totals": [],
+            "passes": [],
+            "pages": [],
+            "warnings": [],
+            "stop_reason": "max_passes",
+        }
+        self.comment_crawl_summaries[aweme_id] = summary
+        current_pass = 0
 
-            # 减少等待时间，但保持随机性避免被检测
-            import random
-            sleep_time = crawl_interval + random.uniform(0, 0.2)  # 添加随机性
-            await asyncio.sleep(sleep_time)
-        
-        # 如果启用二级评论抓取，则抓取二级评论
-        if is_fetch_sub_comments:
-            for comment in top_level_comments:
-                reply_comment_total = comment.get("reply_comment_total")
-                if reply_comment_total > 0:
-                    comment_id = comment.get("cid")
-                    sub_comments_has_more = 1
-                    sub_comments_cursor = 0
-                    # 减少日志输出，只在有大量回复时才输出
-                    if reply_comment_total > 10:
-                        utils.logger.info(f"[DouYinClient.get_aweme_all_comments] 开始抓取评论 {comment_id} 的 {reply_comment_total} 条回复")
+        def count(value):
+            try:
+                return max(0, int(value or 0))
+            except (ValueError, TypeError):
+                return 0
 
-                    while sub_comments_has_more and total_processed < max_count:
-                        sub_comments_res = await self.get_sub_comments(aweme_id, comment_id, sub_comments_cursor)
-                        sub_comments_has_more = sub_comments_res.get("has_more", 0)
-                        sub_comments_cursor = sub_comments_res.get("cursor", 0)
-                        sub_comments = sub_comments_res.get("comments", [])
+        async def accept(items, parent_id=None):
+            fresh = []
+            for raw in items:
+                if not isinstance(raw, dict) or raw.get("cid") in (None, ""):
+                    summary["invalid_comments_skipped"] += 1
+                    continue
+                if raw.get("aweme_id") not in (None, "") and str(raw["aweme_id"]) != aweme_id:
+                    summary["invalid_comments_skipped"] += 1
+                    continue
+                item = dict(raw)
+                cid = str(item["cid"])
+                item["cid"], item["aweme_id"] = cid, aweme_id
+                if item.get("reply_id") in (None, "", 0, "0"):
+                    item["reply_id"] = parent_id or "0"
+                else:
+                    item["reply_id"] = str(item["reply_id"])
+                if cid in seen:
+                    summary["duplicates_skipped"] += 1
+                    if parent_id is None and cid in roots:
+                        roots[cid] = item
+                    if parent_id is not None:
+                        thread_ids.setdefault(parent_id, set()).add(cid)
+                    continue
+                if len(result) + len(fresh) >= max_count:
+                    break
+                seen.add(cid)
+                fresh.append(item)
+                if parent_id is None:
+                    roots[cid] = item
+                else:
+                    thread_ids.setdefault(parent_id, set()).add(cid)
+            if fresh:
+                if callback:
+                    await callback(aweme_id, fresh)
+                result.extend(fresh)
+            return len(fresh)
 
-                        if not sub_comments:
-                            continue
-                        
-                        # 检查是否超过最大数量限制
-                        if total_processed + len(sub_comments) > max_count:
-                            sub_comments = sub_comments[:max_count - total_processed]
-                        
-                        result.extend(sub_comments)
-                        total_processed += len(sub_comments)
-                        if callback:  # 如果有回调函数，就执行回调函数
-                            await callback(aweme_id, sub_comments)
-                        
-                        # 减少二级评论的等待时间
-                        import random
-                        sleep_time = crawl_interval * 0.8 + random.uniform(0, 0.1)  # 更短的等待时间
-                        await asyncio.sleep(sleep_time)
-                        
-                        # 如果达到最大数量，停止抓取
-                        if total_processed >= max_count:
+        async def collect_pages(fetch, parent_id=None):
+            cursor, visited, empty_pages = 0, set(), 0
+            stream_ids, repeated_pages = set(), 0
+            label = f"回复 {parent_id}" if parent_id is not None else "一级评论"
+            while len(result) < max_count:
+                if summary["requests"]:
+                    await asyncio.sleep(crawl_interval)
+                page = await self._request_comment_page(
+                    fetch, cursor, label, max_retries, crawl_interval, summary
+                )
+                if page is None:
+                    return
+                visited.add(cursor)
+                items = page.get("comments") or []
+                page_ids = {str(item["cid"]) for item in items if isinstance(item, dict) and item.get("cid") is not None}
+                repeated_pages = 0 if page_ids - stream_ids else repeated_pages + 1
+                stream_ids.update(page_ids)
+                added = await accept(items, parent_id)
+                more = page["has_more"] in (True, 1, "1", "true")
+                next_cursor = count(page.get("cursor"))
+                record = {
+                    "pass": current_pass, "stage": label, "cursor": cursor,
+                    "next_cursor": next_cursor, "has_more": more,
+                    "returned": len(items), "added": added,
+                }
+                summary["pages"].append(record)
+                if parent_id is None and page.get("total") is not None:
+                    total = count(page["total"])
+                    if total not in summary["api_totals"]:
+                        summary["api_totals"].append(total)
+                if len(result) >= max_count:
+                    record["stop_reason"] = "configured_limit"
+                    return
+                if not more:
+                    record["stop_reason"] = "api_has_more_0"
+                    return
+                if next_cursor in visited:
+                    record["stop_reason"] = "cursor_not_advancing"
+                    summary["warnings"].append({"stage": label, "cursor": cursor, "reason": "cursor_not_advancing"})
+                    return
+                empty_pages = empty_pages + 1 if not items else 0
+                if empty_pages >= 3:
+                    record["stop_reason"] = "consecutive_empty_pages"
+                    summary["warnings"].append({"stage": label, "cursor": cursor, "reason": "consecutive_empty_pages"})
+                    return
+                if items and repeated_pages >= 3:
+                    record["stop_reason"] = "repeated_pages"
+                    summary["warnings"].append({"stage": label, "cursor": cursor, "reason": "repeated_pages"})
+                    return
+                cursor = next_cursor
+
+        try:
+            for current_pass in range(1, max_passes + 1):
+                before = len(result)
+                await collect_pages(lambda cursor: self.get_aweme_comments(aweme_id, cursor))
+                if summary["stop_reason"] in ("access_blocked", "browser_unavailable"):
+                    break
+                if is_fetch_sub_comments:
+                    for parent_id, item in list(roots.items()):
+                        if len(result) >= max_count or summary["stop_reason"] in ("access_blocked", "browser_unavailable"):
                             break
-                    
-                    # 如果达到最大数量，停止抓取所有二级评论
-                    if total_processed >= max_count:
-                        break
-        
-        utils.logger.info(f"[DouYinClient.get_aweme_all_comments] 总共抓取了 {total_processed} 条评论（顶级评论: {len(top_level_comments)}, 二级评论: {total_processed - len(top_level_comments)}）")
+                        embedded = item.get("reply_comment") or []
+                        if isinstance(embedded, list):
+                            await accept(embedded, parent_id)
+                        expected = count(item.get("reply_comment_total"))
+                        if expected > len(thread_ids.get(parent_id, set())):
+                            await collect_pages(
+                                lambda cursor, cid=parent_id: self.get_sub_comments(aweme_id, cid, cursor),
+                                parent_id,
+                            )
+                added = len(result) - before
+                summary["passes"].append({"pass": current_pass, "added": added, "total": len(result)})
+                utils.logger.info(f"[DouYinClient] 视频 {aweme_id} 第 {current_pass} 轮新增 {added} 条，累计 {len(result)} 条唯一评论")
+                if summary["stop_reason"] in ("access_blocked", "browser_unavailable"):
+                    break
+                if len(result) >= max_count:
+                    summary["stop_reason"] = "configured_limit"
+                    break
+                if current_pass > 1 and not added:
+                    summary["stop_reason"] = "no_new_comments"
+                    break
+        finally:
+            summary["unique_comments"] = len(result)
+            summary["top_level_comments"] = len(roots)
+            summary["reply_comments"] = len(result) - len(roots)
+            summary["incomplete_reply_threads"] = [
+                {"comment_id": cid, "expected": count(item.get("reply_comment_total")),
+                 "captured": len(thread_ids.get(cid, set()))}
+                for cid, item in roots.items()
+                if is_fetch_sub_comments and count(item.get("reply_comment_total")) > len(thread_ids.get(cid, set()))
+            ]
+        utils.logger.info(
+            f"[DouYinClient] 视频 {aweme_id}：一级 {summary['top_level_comments']} 条，"
+            f"回复 {summary['reply_comments']} 条，共 {len(result)} 条；停止原因：{summary['stop_reason']}"
+        )
+        if summary["warnings"] or summary["incomplete_reply_threads"]:
+            utils.logger.warning("[DouYinClient] 存在分页异常或未取齐的回复，请查看本轮 .crawl.json 诊断文件")
         return result
 
     async def get_user_info(self, sec_user_id: str):

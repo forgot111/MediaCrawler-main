@@ -52,6 +52,7 @@ class DouyinCsvStoreImplement(AbstractStore):
         self._run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._file_prefix = "_".join(config.DY_SPECIFIED_ID_LIST[:3]) or "douyin"
         self._lock = asyncio.Lock()
+        self._crawl_summaries = {}
 
     def make_save_file_name(self, store_type: str) -> str:
         """
@@ -108,6 +109,16 @@ class DouyinCsvStoreImplement(AbstractStore):
 
         """
         await self.save_data_to_csv(save_item=comment_item, store_type="comments")
+
+    async def save_crawl_summary(self, aweme_id: str, summary: Dict):
+        """把分页停止原因和补抓统计保存到本轮 CSV 旁边。"""
+        summary_path = pathlib.Path(self.make_save_file_name("comments")).with_suffix(".crawl.json")
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        async with self._lock:
+            self._crawl_summaries[str(aweme_id)] = summary
+            with summary_path.open("w", encoding="utf-8") as file:
+                json.dump({"videos": self._crawl_summaries}, file, ensure_ascii=False, indent=2)
+        utils.logger.info(f"[DouyinCsvStore] 本轮抓取诊断：{summary_path}")
 
     async def store_creator(self, creator: Dict):
         """

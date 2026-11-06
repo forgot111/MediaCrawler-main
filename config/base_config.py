@@ -82,7 +82,7 @@ ENABLE_GET_MEIDAS = False
 # 是否开启爬评论模式, 默认开启爬评论
 ENABLE_GET_COMMENTS = True
 
-# 爬取一级评论的数量控制(单视频/帖子)
+# 单视频抓取的唯一评论数量上限（一级评论和回复合计）
 CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 4000
 
 # 是否开启爬二级评论模式, 默认不开启爬二级评论
@@ -108,8 +108,14 @@ FONT_PATH = "./docs/STZHONGS.TTF"
 # 爬取间隔时间（优化：减少等待时间）
 CRAWLER_MAX_SLEEP_SEC = 1
 
-# 评论抓取间隔时间（单独设置，可以更短）
-COMMENT_CRAWL_INTERVAL = 0.5
+# 评论请求间隔（秒），补抓期间也遵守相同间隔
+COMMENT_CRAWL_INTERVAL = 1.0
+
+# 同一轮任务内最多抓取两遍，补充接口分页返回中遗漏的评论，并按 ID 去重
+COMMENT_CRAWL_PASSES = 2
+
+# 单页失败或异常空页时的最大重试次数，重试间隔逐步增加
+COMMENT_PAGE_MAX_RETRIES = 3
 
 # 批量处理大小（一次处理更多评论）
 BATCH_COMMENT_SIZE = 50

@@ -193,26 +193,29 @@ class DouYinCrawler(AbstractCrawler):
             task = asyncio.create_task(self.get_comments(aweme_id, semaphore), name=aweme_id)
             task_list.append(task)
         if len(task_list) > 0:
-            await asyncio.wait(task_list)
+            await asyncio.gather(*task_list)
 
     async def get_comments(self, aweme_id: str, semaphore: asyncio.Semaphore) -> None:
         async with semaphore:
             try:
-                # 清理评论缓存，开始处理新视频的评论
-                await douyin_store.clear_comment_cache()
-                
-                # 使用更短的评论抓取间隔
-                comment_crawl_interval = getattr(config, 'COMMENT_CRAWL_INTERVAL', 0.5)
-                await self.dy_client.get_aweme_all_comments(
-                    aweme_id=aweme_id,
-                    crawl_interval=comment_crawl_interval,
-                    is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
-                    callback=douyin_store.batch_update_dy_aweme_comments,
-                    max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
-                )
-                # 减少等待时间
-                await asyncio.sleep(0.5)
-                utils.logger.info(f"[DouYinCrawler.get_comments] aweme_id: {aweme_id} comments have all been obtained and filtered ...")
+                # 缓存已在本轮开始时清理；并发视频不能互相清空去重记录。
+                comment_crawl_interval = getattr(config, 'COMMENT_CRAWL_INTERVAL', 1.0)
+                try:
+                    comments = await self.dy_client.get_aweme_all_comments(
+                        aweme_id=aweme_id,
+                        crawl_interval=comment_crawl_interval,
+                        is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
+                        callback=douyin_store.batch_update_dy_aweme_comments,
+                        max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
+                        max_passes=getattr(config, 'COMMENT_CRAWL_PASSES', 2),
+                        max_retries=getattr(config, 'COMMENT_PAGE_MAX_RETRIES', 3),
+                    )
+                finally:
+                    summary = self.dy_client.comment_crawl_summaries.get(str(aweme_id))
+                    if config.SAVE_DATA_OPTION == "csv" and summary is not None:
+                        store = await douyin_store.DouyinStoreFactory.create_store()
+                        await store.save_crawl_summary(aweme_id, summary)
+                utils.logger.info(f"[DouYinCrawler.get_comments] 视频 {aweme_id} 本轮获得 {len(comments)} 条唯一评论")
             except DataFetchError as e:
                 utils.logger.error(f"[DouYinCrawler.get_comments] aweme_id: {aweme_id} get comments failed, error: {e}")
 
